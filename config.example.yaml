@@ -1,0 +1,7 @@
+chia_config: "/home/user/.chia/mainnet" # this is optional
+wallets:
+  hot_wallet:
+    mnemonic: super hot mnemonic # this won't work in non-simulator mode
+drivers:
+  # list of directories with driver Chialisp modules in them
+  - "./drivers"

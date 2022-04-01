@@ -1,0 +1,3 @@
+(mod (WALLET_ID text1 text2 text3)
+     (list (list 51 (concat text1 text2 text3) 0))
+)
