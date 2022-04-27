@@ -4,7 +4,9 @@ from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import Node
 
+from chia.full_node.hint_store import HintStore
 import aiosqlite
+from chia.rpc.full_node_rpc_client import coin_record_dict_backwards_compat
 import pytimeparse
 from chia.consensus.block_rewards import (
     calculate_base_farmer_reward,
@@ -16,10 +18,17 @@ from chia.consensus.cost_calculator import NPCResult
 from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.full_node.bundle_tools import simple_solution_generator
 from chia.full_node.coin_store import CoinStore
-from chia.full_node.mempool_check_conditions import get_puzzle_and_solution_for_coin
+from chia.full_node.mempool_check_conditions import (
+    get_name_puzzle_conditions,
+    get_puzzle_and_solution_for_coin,
+)
 from chia.full_node.mempool_manager import MempoolManager
 from chia.types.blockchain_format.coin import Coin
-from chia.types.blockchain_format.program import Program, SerializedProgram
+from chia.types.blockchain_format.program import (
+    INFINITE_COST,
+    Program,
+    SerializedProgram,
+)
 from chia.types.blockchain_format.sized_bytes import bytes32
 from chia.types.coin_record import CoinRecord
 from chia.types.coin_spend import CoinSpend
@@ -30,7 +39,7 @@ from chia.types.spend_bundle import SpendBundle
 from chia.util.condition_tools import (
     ConditionOpcode,
 )
-from chia.util.db_wrapper import DBWrapper
+from chia.util.db_wrapper import DBWrapper, DBWrapper2
 from chia.util.errors import Err, ValidationError
 from chia.util.hash import std_hash
 from chia.util.ints import uint32, uint64
@@ -41,12 +50,6 @@ CONDITIONS = dict(
     (k, bytes(v)[0]) for k, v in ConditionOpcode.__members__.items()
 )  # pylint: disable=E1101
 KFA = {v: k for k, v in CONDITIONS.items()}
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d] %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
-    filename="debug.log",
-)
 log = logging.getLogger(__name__)
 mempool = {}
 
@@ -79,6 +82,9 @@ class SimBlockRecord:
         self.prev_transaction_block_hash = std_hash(std_hash(height))
 
 
+import random
+
+
 class SpendSim:
 
     connection: aiosqlite.Connection
@@ -88,14 +94,18 @@ class SpendSim:
     timestamp: uint64
     block_height: uint32
     defaults: ConsensusConstants
+    db_wrapper: DBWrapper2
+    hint_store: HintStore
 
     @classmethod
     async def create(cls, defaults=DEFAULT_CONSTANTS):
         self = cls()
-        conn_thread: Thread = aiosqlite.connect(":memory:")
-        conn_thread.daemon = True
-        self.connection = await conn_thread
-        coin_store = await CoinStore.create(DBWrapper(self.connection))
+        uri = f"file:db_{random.randint(0, 99999999)}?mode=memory&cache=shared"
+        db_connection = await aiosqlite.connect(uri)
+        self.db_wrapper = DBWrapper2(db_connection, db_version=2)
+        await self.db_wrapper.add_connection(await aiosqlite.connect(uri))
+        coin_store = await CoinStore.create(self.db_wrapper)
+        self.hint_store = await HintStore.create(self.db_wrapper)
         self.mempool_manager = MempoolManager(coin_store, defaults)
         self.block_records = []
         self.blocks = []
@@ -105,7 +115,7 @@ class SpendSim:
         return self
 
     async def close(self):
-        await self.connection.close()
+        await self.db_wrapper.close()
 
     async def new_peak(self):
         await self.mempool_manager.new_peak(self.block_records[-1], [])
@@ -143,7 +153,20 @@ class SpendSim:
             return None
         return simple_solution_generator(bundle)
 
-    async def farm_block(self, puzzle_hash: bytes32 = bytes32(b"0" * 32)):
+    def get_hint_list(self, npc):
+        h_list = []
+        if npc.conds is None:
+            return []
+        for spend in npc.conds.spends:
+            for puzzle_hash, amount, hint in spend.create_coin:
+                if hint != b"":
+                    coin_id = Coin(spend.coin_id, puzzle_hash, amount).name()
+                    h_list.append((coin_id, hint))
+        return h_list
+
+    async def farm_block(self, puzzle_hash: bytes32 = None):
+        if not puzzle_hash:
+            puzzle_hash = bytes32(b"0" * 32)
         # Fees get calculated
         fees = uint64(0)
         if self.mempool_manager.mempool.spends:
@@ -203,6 +226,20 @@ class SpendSim:
         generator: Optional[BlockGenerator] = await self.generate_transaction_generator(
             generator_bundle
         )
+        if generator:
+            npc = get_name_puzzle_conditions(
+                generator,
+                INFINITE_COST,
+                cost_per_byte=1,
+                mempool_mode=False,
+                height=next_block_height,
+            )
+            if npc:
+                print("Got back npc: %s" % npc.__dict__)
+                hint_list = self.get_hint_list(npc)
+                print("Hint list found: %s" % (hint_list))
+                await self.hint_store.add_hints(hint_list)
+
         self.block_records.append(
             SimBlockRecord(
                 [pool_coin, farmer_coin],
@@ -252,9 +289,7 @@ class SimClient:
     def __init__(self, service):
         self.service = service
 
-    async def push_tx(
-        self, spend_bundle: SpendBundle
-    ) -> Tuple[MempoolInclusionStatus, Optional[Err]]:
+    async def push_tx(self, spend_bundle: SpendBundle) -> Dict:
         try:
             cost_result: NPCResult = (
                 await self.service.mempool_manager.pre_validate_spendbundle(
@@ -262,11 +297,14 @@ class SimClient:
                 )
             )
         except ValidationError as e:
+            raise e
             return MempoolInclusionStatus.FAILED, e.code
         cost, status, error = await self.service.mempool_manager.add_spendbundle(
             spend_bundle, cost_result, spend_bundle.name()
         )
-        return status, error
+        if error:
+            raise ValueError(error)
+        return {"status": status.name}
 
     async def get_coin_record_by_name(self, name: bytes32) -> CoinRecord:
         return await self.service.mempool_manager.coin_store.get_coin_record(name)
@@ -327,6 +365,42 @@ class SimClient:
         return await self.service.mempool_manager.coin_store.get_coin_records_by_puzzle_hashes(
             **kwargs
         )
+
+    async def get_coin_records_by_hint(
+        self,
+        hint: bytes32,
+        include_spent_coins: bool = True,
+        start_height: Optional[int] = None,
+        end_height: Optional[int] = None,
+    ) -> List[CoinRecord]:
+        """
+        Retrieves coins by hint, by default returns unspent coins.
+        """
+
+        names: List[bytes32] = await self.service.hint_store.get_coin_ids(
+            bytes32.from_hexstr(hint.hex())
+        )
+
+        kwargs: Dict[str, Any] = {
+            "include_spent_coins": False,
+            "names": names,
+        }
+
+        if start_height:
+            kwargs["start_height"] = uint32(start_height)
+        if end_height:
+            kwargs["end_height"] = uint32(end_height)
+
+        if include_spent_coins:
+            kwargs["include_spent_coins"] = include_spent_coins
+
+        coin_records = (
+            await self.service.mempool_manager.coin_store.get_coin_records_by_names(
+                **kwargs
+            )
+        )
+
+        return coin_records
 
     async def get_block_record_by_height(self, height: uint32) -> SimBlockRecord:
         return list(
@@ -438,12 +512,13 @@ class NodeSimulator(Node):
 
     time: datetime.timedelta
     sim: SpendSim
-    sim_client: SimClient
-    wallets = Dict
+    client: SimClient
+    wallets: Dict
 
     @classmethod
     async def create(cls) -> "NodeSimulator":
         self = cls()
+        self.simulator = True
         self.time = datetime.timedelta(
             days=18750, seconds=61201
         )  # Past the initial transaction freeze
@@ -456,7 +531,9 @@ class NodeSimulator(Node):
         await self.sim.close()
 
     # Have the system farm one block with a specific beneficiary (nobody if not specified).
-    async def farm_block(self, farmer=None) -> Tuple[List[Coin], List[Coin]]:
+    async def farm_block(
+        self, farmer_puzhash: bytes32 = None
+    ) -> Tuple[List[Coin], List[Coin]]:
         """Given a farmer, farm a block with that actor as the beneficiary of the farm
         reward.
 
@@ -464,26 +541,9 @@ class NodeSimulator(Node):
         """
 
         farm_duration = datetime.timedelta(block_time)
-        if not farmer:
-            from coinman.wallet import Wallet
-
-            w = Wallet(self, simple_seed="nobody")
-            farmer = w
-        farmer_puzhash = farmer.puzzle_hash
         farmed: Tuple[List[Coin], List[Coin]] = await self.sim.farm_block(
             farmer_puzhash
         )
-
-        for w in self.wallets.values():
-            w._clear_coins()
-
-        for w in self.wallets.values():
-            coin_records: List[
-                CoinRecord
-            ] = await self.sim_client.get_coin_records_by_puzzle_hash(w.puzzle_hash)
-            for coin_record in coin_records:
-                if coin_record.spent is False:
-                    w.add_coin(CoinWrapper.from_coin(coin_record.coin, w.puzzle))
         self.time += farm_duration
         return farmed
 

@@ -1,40 +1,16 @@
 #!/usr/bin/env python3
 import asyncio
+from typing import Any, Dict
+from coinman.contract import Contract
 
 from aiohttp import web
 from functools import wraps
 import json
+from chia.util.byte_types import hexstr_to_bytes
 import click
 import aiohttp_rpc
 import logging
 
-import logging.config
-
-import os
-
-logging.config.dictConfig(
-    {
-        "version": 1,
-        "formatters": {
-            "verbose": {
-                "format": "[{levelname}] [{asctime}] [{module}:{funcName}():{lineno}] - {message}",
-                "style": "{",
-            },
-            "simple": {
-                "format": "{levelname} {message}",
-                "style": "{",
-            },
-        },
-        "disable_existing_loggers": True,
-        "handlers": {
-            "console": {"class": "logging.StreamHandler", "formatter": "verbose"},
-        },
-        "root": {
-            "handlers": ["console"],
-            "level": os.environ.get("LOG_LEVEL", "DEBUG"),
-        },
-    }
-)
 
 VERBOSE = False
 
@@ -76,8 +52,8 @@ def parse_launcher(ctx, param, value):
 @click.option(
     "--config-path",
     "-c",
-    help="Path to your config. Defaults to `./config.yaml`",
-    default="./config.yaml",
+    help="Path to your config. Defaults to `./coinman.yaml`",
+    default="./coinman.yaml",
 )
 @click.option("-v", "--verbose", help="Show more debugging info.", is_flag=True)
 @click.pass_context
@@ -91,20 +67,205 @@ def cli(ctx, config_path, verbose):
     debug(f"Setting up...")
     from coinman.core import Coinman
 
-    coinman = Coinman.create(config_path)
+    coinman = Coinman.create(config_path, simulate=False)
     ctx.obj = coinman
+
+
+@click.command(help="Initialize a new coinman project")
+@click.option(
+    "--testnet",
+    help="Set network to testnet",
+    is_flag=True,
+)
+@click.argument("path")
+@coro
+@click.pass_context
+async def init(ctx, path, testnet):
+    from coinman.core import Coinman
+
+    if Coinman.init(path, testnet):
+        click.echo("Coinman project initialized and new wallet generated at %s" % path)
+        coinman: Coinman
+        async with ctx.obj as coinman:
+            w = coinman.get_wallet()
+            print(
+                "Please send some XCH (0.01 should be enough) to the wallet so you can make transactions: \n\t%s"
+                % w.address
+            )
+
+
+@click.command(help="Show wallet details.")
+@click.option(
+    "-w",
+    "--wallet",
+    help="Select a wallet to use. Defaults to first one.",
+    default=None,
+)
+@coro
+@click.pass_context
+async def show_wallet(ctx, wallet):
+    from coinman.core import Coinman
+
+    coinman: Coinman
+    async with ctx.obj as coinman:
+        w = coinman.get_wallet(wallet)
+        import pprint
+
+        click.echo("Public key: ", nl=False)
+        click.echo(str(w.pk()))
+        click.echo("Address: ", nl=False)
+        click.echo(w.address)
+        click.echo(
+            click.style("Balance: ", bold=True)
+            + click.style(str(await w.balance()), fg="red", bold=True)
+            + " mojos"
+        )
+
+
+@click.command(help="Get current minimum fee")
+@coro
+@click.pass_context
+async def get_min_fee(
+    ctx,
+):
+    from coinman.core import Coinman
+
+    coinman: Coinman
+
+    async with ctx.obj as coinman:
+        result = await coinman.get_min_fee_per_cost()
+        import pprint
+
+        pprint.pprint(result)
+
+
+@click.command(help="Invoke a contract coin method.")
+@click.option(
+    "-w",
+    "--wallet",
+    help="Select a wallet to use. Defaults to first one.",
+    default=None,
+)
+@click.option(
+    "-s",
+    "--state",
+    help="JSON string to store as initial state. It should be a key/pair form: ",
+)
+@click.option(
+    "-m", "--method", help="Name of the method to invoke (use inspect to list them)"
+)
+@click.option(
+    "-a",
+    "--arg",
+    help="Argument for the method, you can use multiple times",
+    multiple=True,
+)
+@click.option("-f", "--fee", help="Transaction fee, defaults to 0", default=0)
+@click.option("-t", "--amount", help="Coin amount, defaults to 1", default=1)
+@click.argument("filename")
+@coro
+@click.pass_context
+async def invoke(
+    ctx,
+    wallet: str,
+    state: Dict,
+    method: str,
+    arg,
+    fee: int,
+    amount: int,
+    filename: str,
+):
+    from coinman.core import Coinman
+
+    coinman: Coinman
+    state = json.loads(state)
+
+    click.echo("Parsed state: %s" % state)
+    async with ctx.obj as coinman:
+        result = await coinman.invoke(
+            filename,
+            state,
+            method.encode("utf-8"),
+            *arg,
+            fee=fee,
+            amount=amount,
+            wallet_id=wallet,
+        )
+        import pprint
+
+        pprint.pprint(result)
+
+
+@click.command(help="Inspect a contract.")
+@click.option(
+    "-a",
+    "--amount",
+    help="Coin amount contract should use",
+)
+@click.option(
+    "-s",
+    "--state",
+    help="Chialisp program to store as initial state. It should be a key/pair form: ",
+)
+@click.argument("filename")
+@coro
+@click.pass_context
+async def inspect(ctx, amount, state, filename):
+    """Inspect a contract"""
+    state = json.loads(state)
+    async with ctx.obj as coinman:
+        meta = coinman.inspect(filename, state, amount)
+        print("Inspecting %s" % meta["full_path"])
+        print("Methods: %s" % meta["methods"])
+        print("Properties: %s" % meta["props"])
+        print("Hints: %s" % meta["hints"])
+
+
+@click.command(help="Mint a coin with contract puzzle.")
+@click.option(
+    "-w",
+    "--wallet",
+    help="Select a wallet to use. Defaults to first one.",
+    default=None,
+)
+@click.option(
+    "-a",
+    "--amount",
+    help="Coin amount contract should use",
+)
+@click.option(
+    "-s",
+    "--state",
+    help="Chialisp program to store as initial state. It should be a key/pair form: ",
+)
+@click.option("-f", "--fee", help="Transaction fee, defaults to 0", default=0)
+@click.argument("filename")
+@coro
+@click.pass_context
+async def mint(ctx, wallet, amount, state, fee, filename):
+    """Mint a coin with a contract puzzle from FILENAME"""
+    state = json.loads(state)
+
+    from coinman.core import Coinman
+
+    coinman: Coinman
+    async with ctx.obj as coinman:
+        import pprint
+
+        result = coinman.mint(filename, state, amount, fee, wallet)
+        pprint.pprint(result)
 
 
 @click.command(help="Start coinman service.")
 @coro
 @click.pass_context
-async def run(ctx):
+async def runserver(ctx):
     from coinman.core import Coinman
 
     coinman: Coinman
     async with ctx.obj as coinman:
         app = coinman.create_rpc_app()
-        host = "0.0.0.0"
+        host = "127.0.0.1"
         try:
             host = coinman.config["server"]["host"]
         except KeyError:
@@ -125,7 +286,6 @@ def shell(filename=""):
 
     from traitlets.config import Config
     from IPython.terminal.prompts import Prompts, Token
-    import os
 
     class MyPrompt(Prompts):
         def in_prompt_tokens(self, cli=None):
@@ -156,7 +316,14 @@ Type `chia()` to see available commands.
     IPython.start_ipython(argv=[], config=c)
 
 
-cli.add_command(run)
+cli.add_command(runserver)
+cli.add_command(get_min_fee)
+cli.add_command(show_wallet)
+cli.add_command(init)
+cli.add_command(inspect)
+cli.add_command(invoke)
+cli.add_command(runserver)
 cli.add_command(shell)
+cli.add_command(mint)
 if __name__ == "__main__":
     shell()

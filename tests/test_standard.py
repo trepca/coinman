@@ -8,14 +8,14 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_wallet_balance(node: NodeSimulator):
-    w = Wallet(node)
+    w = Wallet(node, simple_seed="wallet0")
     assert await w.balance() == 0
 
 
 @pytest.mark.asyncio
 async def test_wallet_transfer(node: NodeSimulator):
-    w1 = Wallet(node)
-    w2 = Wallet(node)
+    w1 = Wallet(node, simple_seed="wallet1")
+    w2 = Wallet(node, simple_seed="wallet2")
     await node.farm_block(w1)
     w1_balance = await w1.balance()
     assert w1_balance > 0

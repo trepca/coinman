@@ -46,13 +46,13 @@ async def get_node_client(config_path=DEFAULT_ROOT_PATH) -> FullNodeRpcClient:
 class Node:
 
     client: FullNodeRpcClient
-    keys = Dict
+
+    simulator: bool
 
     @classmethod
     async def create(cls, config_path) -> "Node":
         self = cls()
         self.client = await get_node_client(config_path)
-        self.keys = {}
         return self
 
     async def close(self):
@@ -77,6 +77,12 @@ class Node:
         self, puzzle_hash: bytes32, **kwargs
     ) -> List[Coin]:
         coins = await self.client.get_coin_records_by_puzzle_hash(puzzle_hash, **kwargs)
+        if coins:
+            return coins
+        return []
+
+    async def get_coin_records_by_hint(self, hint: bytes32, **kwargs) -> List[Coin]:
+        coins = await self.client.get_coin_records_by_hint(hint, **kwargs)
         if coins:
             return coins
         return []
@@ -135,6 +141,10 @@ class Node:
 
         return result
 
+    async def get_all_mempool_items(self) -> Dict[bytes32, Dict]:
+        spends = await self.client.get_all_mempool_items()
+        return spends
+
     async def get_puzzle_and_solution(
         self, coin_id: bytes32, height: uint32
     ) -> Optional[CoinSpend]:
@@ -146,174 +156,5 @@ class Node:
         didn't validate, then a result containing an 'error' key is returned.  The reward
         for the block goes to Network::nobody"""
 
-        status, error = await self.client.push_tx(bundle)
-        if error:
-            return {"error": str(error), "status": status}
-        return {"status": status}
-
-    def push_debug(
-        self,
-        spend_bundle,
-        agg_sig_additional_data=DEFAULT_CONSTANTS.AGG_SIG_ME_ADDITIONAL_DATA,
-    ):
-        """
-        Print a lot of useful information about a `SpendBundle` that might help with debugging
-        its clvm.
-        """
-
-        pks = []
-        msgs = []
-
-        created_coin_announcements: List[List[bytes]] = []
-        asserted_coin_announcements = []
-        created_puzzle_announcements: List[List[bytes]] = []
-        asserted_puzzle_announcements = []
-
-        for coin_spend in spend_bundle.coin_spends:
-            coin = coin_spend.coin
-            puzzle_reveal = Program.from_bytes(bytes(coin_spend.puzzle_reveal))
-            solution = Program.from_bytes(bytes(coin_spend.solution))
-            coin_name = coin.name()
-
-            log.debug("Running coin %s: %s", coin.name(), coin)
-            error, conditions, cost = conditions_dict_for_solution(
-                puzzle_reveal, solution, INFINITE_COST
-            )
-            log.debug("Got back cost: %s", cost)
-            if error:
-                log.debug("Error running coin %s: %s", coin.name(), error)
-                raise ValueError(error)
-            elif conditions is not None:
-                for pk_bytes, m in pkm_pairs_for_conditions_dict(
-                    conditions, coin_name, agg_sig_additional_data
-                ):
-                    pks.append(G1Element.from_bytes(pk_bytes))
-                    msgs.append(m)
-                cost, r = puzzle_reveal.run_with_cost(INFINITE_COST, solution)  # type: ignore
-                if conditions and len(conditions) > 0:
-                    log.debug("grouped conditions:")
-                    as_prog = None
-                    for condition_programs in conditions.values():
-                        for c in condition_programs:
-                            if len(c.vars) == 1:
-                                as_prog = Program.to([c.opcode, c.vars[0]])
-                            elif len(c.vars) == 2:
-                                as_prog = Program.to([c.opcode, c.vars[0], c.vars[1]])
-                            else:
-                                continue
-                            log.debug("%s", disassemble(as_prog))
-                    created_coin_announcements.extend(
-                        [coin_name] + _.vars
-                        for _ in conditions.get(
-                            ConditionOpcode.CREATE_COIN_ANNOUNCEMENT, []
-                        )
-                    )
-                    asserted_coin_announcements.extend(
-                        [
-                            _.vars[0].hex()
-                            for _ in conditions.get(
-                                ConditionOpcode.ASSERT_COIN_ANNOUNCEMENT, []
-                            )
-                        ]
-                    )
-                    created_puzzle_announcements.extend(
-                        [puzzle_reveal.get_tree_hash()] + _.vars
-                        for _ in conditions.get(
-                            ConditionOpcode.CREATE_PUZZLE_ANNOUNCEMENT, []
-                        )
-                    )
-                    asserted_puzzle_announcements.extend(
-                        [
-                            _.vars[0].hex()
-                            for _ in conditions.get(
-                                ConditionOpcode.ASSERT_PUZZLE_ANNOUNCEMENT, []
-                            )
-                        ]
-                    )
-                else:
-                    log.debug("No conditions for coin: %s", coin.name())
-        created = set(spend_bundle.additions())
-        spent = set(spend_bundle.removals())
-
-        zero_coin_set = set(coin.name() for coin in created if coin.amount == 0)
-
-        ephemeral = created.intersection(spent)
-        created.difference_update(ephemeral)
-        spent.difference_update(ephemeral)
-        log.debug("Spent coins:")
-        for coin in sorted(spent, key=lambda _: _.name()):
-            log.debug("%s: %s", coin.name(), dump_coin(coin))
-        log.debug("created coins")
-        for coin in sorted(created, key=lambda _: _.name()):
-            log.debug("%s: %s", coin.name(), dump_coin(coin))
-
-        if ephemeral:
-            log.debug("ephemeral coins")
-            for coin in sorted(ephemeral, key=lambda _: _.name()):
-                log.debug("%s: %s", coin.name(), dump_coin(coin))
-
-        created_coin_announcement_pairs = [
-            (_, std_hash(b"".join(_)).hex()) for _ in created_coin_announcements
-        ]
-        if created_coin_announcement_pairs:
-            log.debug("created coin announcements")
-            for announcement, hashed in sorted(
-                created_coin_announcement_pairs, key=lambda _: _[-1]
-            ):
-                as_hex = [f"0x{_.hex()}" for _ in announcement]
-                log.debug(f"  {as_hex} =>\n      {hashed}")
-
-        eor_coin_announcements = sorted(
-            set(_[-1] for _ in created_coin_announcement_pairs)
-            ^ set(asserted_coin_announcements)
-        )
-
-        created_puzzle_announcement_pairs = [
-            (_, std_hash(b"".join(_)).hex()) for _ in created_puzzle_announcements
-        ]
-        if created_puzzle_announcements:
-            log.debug("created puzzle announcements")
-            for announcement, hashed in sorted(
-                created_puzzle_announcement_pairs, key=lambda _: _[-1]
-            ):
-                as_hex = [f"0x{_.hex()}" for _ in announcement]
-                log.debug(f"  {as_hex} =>\n      {hashed}")
-
-        eor_puzzle_announcements = sorted(
-            set(_[-1] for _ in created_puzzle_announcement_pairs)
-            ^ set(asserted_puzzle_announcements)
-        )
-
-        log.debug(f"zero_coin_set = {sorted(zero_coin_set)}")
-        if created_coin_announcement_pairs or asserted_coin_announcements:
-            log.debug(
-                f"created  coin announcements = {sorted([_[-1] for _ in created_coin_announcement_pairs])}"
-            )
-            log.debug(
-                f"asserted coin announcements = {sorted(asserted_coin_announcements)}"
-            )
-            log.debug(
-                f"symdiff of coin announcements = {sorted(eor_coin_announcements)}"
-            )
-        if created_puzzle_announcement_pairs or asserted_puzzle_announcements:
-            log.debug(
-                f"created  puzzle announcements = {sorted([_[-1] for _ in created_puzzle_announcement_pairs])}"
-            )
-            log.debug(
-                f"asserted puzzle announcements = {sorted(asserted_puzzle_announcements)}"
-            )
-            log.debug(
-                f"symdiff of puzzle announcements = {sorted(eor_puzzle_announcements)}"
-            )
-        log.debug("=" * 80)
-        validates = AugSchemeMPL.aggregate_verify(
-            pks, msgs, spend_bundle.aggregated_signature
-        )
-
-        log.debug(f"aggregated signature check pass: {validates}")
-        log.debug(f"pks: {pks}")
-        log.debug(f"msgs: {[msg.hex() for msg in msgs]}")
-        log.debug(f"  msg_data: {[msg.hex()[:-128] for msg in msgs]}")
-        log.debug(f"  coin_ids: {[msg.hex()[-128:-64] for msg in msgs]}")
-        log.debug(f"  add_data: {[msg.hex()[-64:] for msg in msgs]}")
-        log.debug(f"signature: {spend_bundle.aggregated_signature}")
+        status = await self.client.push_tx(bundle)
+        return status

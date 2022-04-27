@@ -1,4 +1,0 @@
-(mod (WALLET_ID)
-     (list "{'balance': " (list 10000 "wallet.balance" WALLET_ID) " }")
-
-)
