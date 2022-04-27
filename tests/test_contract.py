@@ -12,7 +12,7 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
         await node.farm_block(alice.puzzle_hash)
 
         print("Making a contract for pk: %s" % alice.pk())
-        contract1 = Contract("tests/msg.clvm", {b"pk": bytes(alice.pk())}, amount=1)
+        contract1 = Contract("tests/msg.clvm", {"pk": bytes(alice.pk())}, amount=1)
 
         coins = await alice.get_spendable_coins(contract1)
         print("Found coins: %s" % coins)
@@ -33,7 +33,7 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
         assert result["type"] == "query"
         assert len(result["records"]) == 1
         assert result["records"][0]["data"] == [b"yolo1"]
-        assert result["records"][0]["state"][b"pk"] == bytes(alice.pk())
+        assert result["records"][0]["state"]["pk"] == bytes(alice.pk())
 
         result = await alice.run(
             contract1, b"send_message", b"yolo2"
@@ -55,7 +55,7 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
         bob = ContractWallet(node, simple_seed="bob")
         await node.farm_block(bob.puzzle_hash)
 
-        contract2 = Contract("tests/msg.clvm", {b"pk": bytes(bob.pk())}, amount=1)
+        contract2 = Contract("tests/msg.clvm", {"pk": bytes(bob.pk())}, amount=1)
         with pytest.raises(ValueError):
             await bob.run(contract2, b"send_message", b"hi everyone!")
         await bob.mint(contract2)
@@ -67,7 +67,7 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
         assert result["records"][2]["data"] == [b"hi everyone!"]
         result = await alice.run(contract1, b"get_messages", 0, 10)
         assert len(result["records"]) == 3
-        assert result["records"][2]["state"][b"pk"] == bytes(bob.pk())
+        assert result["records"][2]["state"]["pk"] == bytes(bob.pk())
         assert result["records"][2]["data"] == [b"hi everyone!"]
     finally:
         await node.close()
@@ -106,7 +106,7 @@ async def test_custom_channel_msg_coin_contract(node: NodeSimulator):
         assert result["type"] == "query"
         assert len(result["records"]) == 1
         assert result["records"][0]["data"] == [b"yolo1"]
-        assert result["records"][0]["state"][b"pk"] == bytes(alice.pk())
+        assert result["records"][0]["state"]["pk"] == bytes(alice.pk())
 
         result = await alice.run(
             alices_contract, b"send_message", b"yolo2"
@@ -121,7 +121,7 @@ async def test_custom_channel_msg_coin_contract(node: NodeSimulator):
         assert result["type"] == "query"
         assert len(result["records"]) == 2
         assert result["records"][0]["data"] == [b"yolo1"]
-        assert result["records"][0]["state"][b"pk"] == bytes(alice.pk())
+        assert result["records"][0]["state"]["pk"] == bytes(alice.pk())
         assert result["records"][1]["data"] == [b"yolo2"]
 
         await bob.run(bobs_contract, b"send_message", b"this is so cool!")
@@ -132,10 +132,10 @@ async def test_custom_channel_msg_coin_contract(node: NodeSimulator):
         assert result["type"] == "query"
         assert len(result["records"]) == 3
         assert result["records"][0]["data"] == [b"yolo1"]
-        assert result["records"][0]["state"][b"pk"] == bytes(alice.pk())
+        assert result["records"][0]["state"]["pk"] == bytes(alice.pk())
         assert result["records"][1]["data"] == [b"yolo2"]
         assert result["records"][2]["data"] == [b"this is so cool!"]
-        assert result["records"][2]["state"][b"pk"] == bytes(bob.pk())
+        assert result["records"][2]["state"]["pk"] == bytes(bob.pk())
     finally:
         await node.close()
 

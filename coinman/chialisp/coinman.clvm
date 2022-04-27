@@ -1,6 +1,6 @@
 (    ; custom contract condition code
     (defconstant RECREATE_COIN 3001)
-    (defconstant QUERY_SPENT_COINS 3002)
+    (defconstant QUERY_COINS 3002)
     (defconstant CONTRACT_META 3003)
 
 

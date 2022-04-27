@@ -36,7 +36,7 @@
             )
             (if (= method "get_messages")
                 (list
-                    (list QUERY_SPENT_COINS
+                    (list QUERY_COINS
                         ; query filters
                         (list
                             (list "hint"  (get-hints STATE))
