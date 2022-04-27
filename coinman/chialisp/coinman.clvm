@@ -1,0 +1,111 @@
+(    ; custom contract condition code
+    (defconstant RECREATE_COIN 3001)
+    (defconstant QUERY_SPENT_COINS 3002)
+    (defconstant CONTRACT_META 3003)
+
+
+
+    (defun sha256tree1 (TREE)
+        (if (l TREE)
+            (sha256 2 (sha256tree1 (f TREE)) (sha256tree1 (r TREE)))
+            (sha256 1 TREE)
+        )
+    )
+
+    (defun $$get-new-puzzle-hash (mod_hash new_self)
+        (puzzle-hash-of-curried-function
+            mod_hash (sha256tree1 new_self) ; parameters must be passed in reverse order
+        )
+    )
+
+
+
+    (defun $$concat-lists (list1 list2)
+        (if (l list1)
+            (c (f list1) ($$concat-lists (r list1) list2))
+            list2)
+    )
+
+    (defun $$apply-prop (prop full_self)
+        (if (l full_self)
+            (if (f full_self)
+                (if (= (f (f full_self)) prop)
+                    (f full_self)
+                    ($$apply-prop prop (r full_self))
+                )
+                (list prop ())
+            )
+            ; empty value
+            (list prop ())
+        )
+    )
+
+    (defun $$mutate-self (props full_self new_self)
+        (if (l props)
+            (c ($$apply-prop (f props) full_self) ($$mutate-self (r props) full_self new_self))
+            ()
+        )
+    )
+
+
+    (defun $$find-field (name self)
+        (if (l self)
+            (if (f self)
+                (if (= (f (f self)) name)
+                    (r (f self))
+                    ($$find-field name (r self))
+                )
+                ()
+            )
+            ()
+        )
+    )
+
+    (defun-inline get (self name)
+        (if (= (substr name 0 2) "$$")
+            (x) ; reserved for internal fields
+            ($$find-field name self)
+        )
+    )
+
+    (defun get-mojos (self)
+        ($$find-field "$" self)
+    )
+
+    (defun get-mod-hash (self)
+        ($$find-field "#" self)
+    )
+
+
+    (defun $$recreate (self (updates amount hints))
+        (list
+            (list ASSERT_MY_AMOUNT (get-mojos self))
+            (list ASSERT_MY_PUZZLEHASH (puzzle-hash-of-curried-function (get-mod-hash self) (sha256tree1 self) ))
+            (list CREATE_COIN
+                            ($$get-new-puzzle-hash
+                                (get-mod-hash self)
+                                ($$concat-lists
+                                    (list (c "#" (get-mod-hash self)) (c "$" (get-mojos self )) )
+                                    ($$mutate-self (get-state-props) ($$concat-lists updates self) ())
+                                )
+                            )
+                            amount
+                            hints
+
+            )
+        )
+    )
+
+
+    (defun def-contract (self stuff)
+        (if (l stuff)
+            (if (= (f (f stuff)) RECREATE_COIN )
+                ($$concat-lists ($$recreate self (r (f stuff))) (def-contract self (r stuff)))
+                (c (f stuff) (def-contract self (r stuff)))
+            )
+            ()
+        )
+    )
+
+
+)
