@@ -411,7 +411,7 @@ class Coinman:
             except:
                 log.exception("serious error")
                 await asyncio.sleep(30)
-            await asyncio.sleep(1)
+            await asyncio.sleep(3)
 
     async def create_rpc_app(self):
         def json_serialize_unknown_value(value):
