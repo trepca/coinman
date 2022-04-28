@@ -589,4 +589,10 @@ class NodeSimulator(Node):
 
     # 'peak' is valid
     async def get_blockchain_state(self) -> Dict:
-        return {"peak": self.sim.get_height()}
+        state = {
+            "blockchain_state": {
+                "mempool_size": 0,
+                "peak": {"height": self.sim.get_height()},
+            }
+        }
+        return state

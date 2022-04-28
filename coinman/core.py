@@ -382,7 +382,7 @@ class Coinman:
             address=w.address,
             puzzle_hash=w.puzzle_hash,
             public_key=w.pk(),
-            blockchain_state=await self.node.get_blockchain_state(),
+            state=await self.node.get_blockchain_state(),
         )
 
     async def farm_block(self, wallet_id=None):
