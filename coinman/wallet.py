@@ -48,6 +48,10 @@ log = logging.getLogger(__name__)
 mempool = {}
 
 
+class AlreadyInThePool(Exception):
+    pass
+
+
 class FeeTooLowError(Exception):
     def __init__(self, spend_bundle: SpendBundle):
         self.spend_bundle = spend_bundle
@@ -130,7 +134,6 @@ class ContractWallet:
         self.puzzle: Program = puzzle_for_pk(self.pk())
         self.puzzle_hash: bytes32 = self.puzzle.get_tree_hash()
         agg_sig_me_add_data = network.get("agg_sig_me_additional_data")
-        print("Got back %s" % (agg_sig_me_add_data))
         if agg_sig_me_add_data:
             self.agg_sig_me_add_data = bytes32.fromhex(agg_sig_me_add_data)
         else:
@@ -190,6 +193,9 @@ class ContractWallet:
         spendable_coins: List[Coin] = await self.node.get_coin_records_by_puzzle_hash(
             self.puzzle_hash, include_spent_coins=False
         )
+        log.debug("Before spending coins: %s", len(spendable_coins))
+        spendable_coins = [x for x in spendable_coins if x not in self._pending_coins]
+        log.debug("After spending coins: %s", len(spendable_coins))
         spendable_amount = uint64(sum(map(lambda x: x.coin.amount, spendable_coins)))
         if mojos > spendable_amount:
             raise ValueError(
@@ -330,8 +336,8 @@ class ContractWallet:
                         self.node.get_coin_records_by_hint(
                             hint,
                             include_spent_coins=spent,
-                            start_height=start,
-                            end_height=end,
+                            # start_height=start,
+                            # end_height=end,
                         )
                     )
 
@@ -406,6 +412,39 @@ class ContractWallet:
     async def get_status(self, spend_bundle_name) -> int:
         pass
 
+    async def do_no_op_spend(self) -> SpendBundle:
+        coins_to_spend = [x for x in await self.select_coins(int(1000000000000 * 2))]
+        bundles = []
+        for coin_to_spend in coins_to_spend:
+            conditions = [
+                (
+                    [
+                        ConditionOpcode.CREATE_COIN,
+                        self.puzzle_hash,
+                        coin_to_spend.amount,
+                    ]
+                )
+            ]
+            log.debug("Got conditions: %s", conditions)
+            delegated_puzzle_solution: Program = Program(Program.to((1, conditions)))
+            solution = Program.to([[], delegated_puzzle_solution, []])
+            try:
+                spend_bundle: SpendBundle = await sign_coin_spends(
+                    [CoinSpend(coin_to_spend, self.puzzle, solution)],
+                    self.pk_to_sk,
+                    self.agg_sig_me_add_data,
+                    DEFAULT_CONSTANTS.MAX_BLOCK_COST_CLVM,
+                )
+            except ValueError:
+                spend_bundle = SpendBundle(
+                    [coin_to_spend],
+                    G2Element(),
+                )
+
+            bundles.append(spend_bundle)
+        final_spend_bundle = SpendBundle.aggregate(bundles)
+        return await self._push(final_spend_bundle)
+
     async def mint(self, contract, amount=1, fee=0) -> Coin:
         async def make_bundle(coin_to_spend, conditions) -> SpendBundle:
             delegated_puzzle_solution: Program = Program(Program.to((1, conditions)))
@@ -458,7 +497,12 @@ class ContractWallet:
         for coin in coins_to_spend[1:]:
             bundles.append(await make_bundle(coin, []))
         final_spend_bundle = SpendBundle.aggregate(bundles)
-        await self._push(final_spend_bundle)
+        log.debug("Generated final spend_bundle: %s", final_spend_bundle)
+        log.debug(
+            "Additions from final spend bundle: %s", final_spend_bundle.additions()
+        )
+        result = await self._push(final_spend_bundle)
+        log.debug("MINT push result: %s", result)
         return final_spend_bundle.additions()[0]
 
     async def calculate_fee(self, fee_per_cost, contract, method, args) -> int:
@@ -482,10 +526,6 @@ class ContractWallet:
         args,
         **kwargs,
     ) -> SpendBundle:
-        amt = uint64(1)
-        if "amt" in kwargs:
-            amt = kwargs["amt"]
-        fee = kwargs.get("fee", 0)
         solution = SerializedProgram.from_program(Program.to(list(args)))
         puzzle = SerializedProgram.from_program(contract.program)
         log.debug("Spending coin: %s" % coin)
@@ -530,7 +570,15 @@ class ContractWallet:
                 return True
             return False
         except ValueError as e:
-            if "INVALID_FEE_TOO_CLOSE_TO_ZERO" in e.args[0]["error"]:
+            log.debug("ValueError debug: %r", e.args)
+            error = None
+            try:
+                error = e.args[0]["error"]
+            except TypeError:
+                error = e.args[0]
+            if "MEMPOOL_CONFLICT" in error:
+                raise AlreadyInThePool()
+            if "INVALID_FEE_TOO_CLOSE_TO_ZERO" in error:
                 raise FeeTooLowError(spend_bundle)
             spend_bundle.debug(self.agg_sig_me_add_data)
             # log.exception("Error pushing bundle: %s", spend_bundle)

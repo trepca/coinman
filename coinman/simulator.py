@@ -83,6 +83,7 @@ class SimBlockRecord:
 
 
 import random
+import time
 
 
 class SpendSim:
@@ -106,10 +107,15 @@ class SpendSim:
         await self.db_wrapper.add_connection(await aiosqlite.connect(uri))
         coin_store = await CoinStore.create(self.db_wrapper)
         self.hint_store = await HintStore.create(self.db_wrapper)
-        self.mempool_manager = MempoolManager(coin_store, defaults)
+        defaults = defaults.replace(
+            MEMPOOL_BLOCK_BUFFER=1, MAX_BLOCK_COST_CLVM=90000000
+        )
+        self.mempool_manager = MempoolManager(
+            coin_store, defaults, single_threaded=True
+        )
         self.block_records = []
         self.blocks = []
-        self.timestamp = 1
+        self.timestamp = int(time.time())
         self.block_height = 1  # skip prefarm
         self.defaults = defaults
         return self
@@ -222,10 +228,12 @@ class SpendSim:
                     [r.name() for r in removals], uint32(self.block_height + 1)
                 )
 
+        log.debug("Generator bundle created: %s", generator_bundle)
         # SimBlockRecord is created
         generator: Optional[BlockGenerator] = await self.generate_transaction_generator(
             generator_bundle
         )
+        log.debug("Generator for block: %s", generator)
         if generator:
             npc = get_name_puzzle_conditions(
                 generator,
@@ -235,9 +243,9 @@ class SpendSim:
                 height=next_block_height,
             )
             if npc:
-                print("Got back npc: %s" % npc.__dict__)
+                log.debug("Got back npc: %s", npc.__dict__)
                 hint_list = self.get_hint_list(npc)
-                print("Hint list found: %s" % (hint_list))
+                log.debug("Hint list found: %s", hint_list)
                 await self.hint_store.add_hints(hint_list)
 
         self.block_records.append(
@@ -262,6 +270,7 @@ class SpendSim:
         return self.block_height
 
     def pass_time(self, time: uint64):
+        log.debug("Increasing time %s for %s", self.timestamp, time)
         self.timestamp = uint64(self.timestamp + time)
 
     def pass_blocks(self, blocks: uint32):
@@ -297,13 +306,24 @@ class SimClient:
                 )
             )
         except ValidationError as e:
-            raise e
-            return MempoolInclusionStatus.FAILED, e.code
+            status, error = MempoolInclusionStatus.FAILED, e.code
         cost, status, error = await self.service.mempool_manager.add_spendbundle(
             spend_bundle, cost_result, spend_bundle.name()
         )
+
         if error:
-            raise ValueError(error)
+            assert error is not None
+            raise ValueError(
+                f"Failed to include transaction {spend_bundle.name()}, error {error.name}"
+            )
+        puzhashes = []
+        for coin in spend_bundle.additions():
+            puzhashes.append(coin.puzzle_hash)
+        log.debug("Collected puzhashes to check: %s", puzhashes)
+        log.debug(
+            "Added new coins: %s",
+            await self.get_coin_records_by_puzzle_hashes(puzhashes),
+        )
         return {"status": status.name}
 
     async def get_coin_record_by_name(self, name: bytes32) -> CoinRecord:
@@ -376,16 +396,13 @@ class SimClient:
         """
         Retrieves coins by hint, by default returns unspent coins.
         """
-
-        names: List[bytes32] = await self.service.hint_store.get_coin_ids(
-            bytes32.from_hexstr(hint.hex())
-        )
+        log.debug("Fetching coins by hint: %r", hint)
+        names: List[bytes32] = await self.service.hint_store.get_coin_ids(hint)
 
         kwargs: Dict[str, Any] = {
             "include_spent_coins": False,
             "names": names,
         }
-
         if start_height:
             kwargs["start_height"] = uint32(start_height)
         if end_height:
@@ -394,6 +411,7 @@ class SimClient:
         if include_spent_coins:
             kwargs["include_spent_coins"] = include_spent_coins
 
+        log.debug("Found coins with hints: %s", kwargs)
         coin_records = (
             await self.service.mempool_manager.coin_store.get_coin_records_by_names(
                 **kwargs
@@ -493,7 +511,7 @@ class SimClient:
     async def get_all_mempool_items(self) -> Dict[bytes32, Dict]:
         spends = {}
         for tx_id, item in self.service.mempool_manager.mempool.spends.items():
-            spends[tx_id] = item
+            spends[tx_id] = item.to_json_dict()
         return spends
 
     async def get_mempool_item_by_tx_id(self, tx_id: bytes32) -> Optional[Dict]:
@@ -526,6 +544,10 @@ class NodeSimulator(Node):
         self.client = SimClient(self.sim)
         self.wallets = {}
         return self
+
+    def set_current_time(self):
+        timestamp = self.sim.timestamp
+        self.sim.pass_time(uint64(int(time.time()) - timestamp))
 
     async def close(self):
         await self.sim.close()
@@ -562,7 +584,7 @@ class NodeSimulator(Node):
         return None
 
     def get_timestamp(self) -> datetime.timedelta:
-        """Return the current simualtion time in seconds."""
+        """Return the current simulation time in seconds."""
         return datetime.timedelta(seconds=self.sim.timestamp)
 
     # 'peak' is valid

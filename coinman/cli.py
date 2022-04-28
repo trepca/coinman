@@ -56,8 +56,11 @@ def parse_launcher(ctx, param, value):
     default="./coinman.yaml",
 )
 @click.option("-v", "--verbose", help="Show more debugging info.", is_flag=True)
+@click.option(
+    "--simulator", help="Use simulator instead of connecting to Node", is_flag=True
+)
 @click.pass_context
-def cli(ctx, config_path, verbose):
+def cli(ctx, config_path, verbose, simulator):
     """Manage beacon coins on Chia network.
 
     They can be used to store key information in a decentralized and durable way."""
@@ -67,7 +70,7 @@ def cli(ctx, config_path, verbose):
     debug(f"Setting up...")
     from coinman.core import Coinman
 
-    coinman = Coinman.create(config_path, simulate=False)
+    coinman = Coinman.create(config_path, simulate=simulator)
     ctx.obj = coinman
 
 
@@ -186,7 +189,7 @@ async def invoke(
             filename,
             state,
             method.encode("utf-8"),
-            *arg,
+            arg,
             fee=fee,
             amount=amount,
             wallet_id=wallet,
@@ -252,7 +255,7 @@ async def mint(ctx, wallet, amount, state, fee, filename):
     async with ctx.obj as coinman:
         import pprint
 
-        result = coinman.mint(filename, state, amount, fee, wallet)
+        result = await coinman.mint(filename, state, amount, fee, wallet)
         pprint.pprint(result)
 
 
@@ -265,6 +268,10 @@ async def runserver(ctx):
     coinman: Coinman
     async with ctx.obj as coinman:
         app = coinman.create_rpc_app()
+        if coinman.simulator:
+            w = coinman.get_wallet()
+            await coinman.node.farm_block(w.puzzle_hash)
+            await coinman.node.farm_block(w.puzzle_hash)
         host = "127.0.0.1"
         try:
             host = coinman.config["server"]["host"]

@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from functools import partial
 import os
@@ -26,7 +27,7 @@ from coinman.node import Node
 from typing import Any, Dict, List, TextIO, Union
 import yaml
 import logging
-
+import time
 import logging.config
 import sys
 
@@ -123,11 +124,12 @@ class Coinman:
     wallets: Dict
     config: Dict
 
-    def __init__(self, node, wallets, contracts, config):
+    def __init__(self, node, wallets, contracts, config, simulator=False):
         self.wallets = wallets
         self.node = node
         self.contracts = contracts
         self.config = config
+        self.simulator = simulator
 
     @staticmethod
     def init(path_str: str, testnet=False):
@@ -168,12 +170,13 @@ class Coinman:
             node = await Node.create(chia_config)
         else:
             node = await NodeSimulator.create()
+            config["network"] = {}
         for wallet_id, private_key in config["wallets"].items():
             wallets[wallet_id] = ContractWallet(
                 node,
                 private_key["mnemonic"],
                 private_key.get("passphrase", ""),
-                network=config["network"],
+                network=config.get("network"),
             )
         contracts = defaultdict(list)
         contracts_config = config.get("contracts", [])
@@ -182,7 +185,7 @@ class Coinman:
             for contract_method in contract_module:
                 contracts[contract_method.full_path].append(contract_method)
 
-        instance = Coinman(node, wallets, contracts, config)
+        instance = Coinman(node, wallets, contracts, config, simulate)
         global COINMAN
         COINMAN = instance
         return instance
@@ -250,31 +253,37 @@ class Coinman:
                 "error invoking contract method with: %s"
                 % str((contract_filename, state, method, args, amount))
             )
-            return dict(error=str(e))
+            return dict(error=e)
 
     async def get_min_fee_per_cost(self):
-        mempool_items = await self.node.get_all_mempool_items()
+        try:
+            mempool_items = await self.node.get_all_mempool_items()
 
-        print((len(mempool_items), get_size(mempool_items)))
-        fees_and_cost = [
-            (x["fee"], x["cost"], x["fee"] / x["cost"] if x["fee"] else 0)
-            for x in mempool_items.values()
-        ]
-        max_cost = int(
-            DEFAULT_CONSTANTS.MAX_BLOCK_COST_CLVM
-            * DEFAULT_CONSTANTS.MEMPOOL_BLOCK_BUFFER
-        )
-        total_cost = sum([x[1] for x in fees_and_cost])
-
-        if total_cost * 1.05 > max_cost:
+            if not mempool_items:
+                return 0.0
             fees_and_cost = [
-                x for x in fees_and_cost if x[2] > 5
-            ]  # 5 is the magic number for now
-        fees_and_cost.sort(key=lambda x: x[0])
-        min_fee = fees_and_cost[0][2]
-        for fees in fees_and_cost:
-            if fees[2] > min_fee:
-                return fees[2] * 1.05  # increase a bit to be safe
+                (x["fee"], x["cost"], x["fee"] / x["cost"] if x["fee"] else 0)
+                for x in mempool_items.values()
+            ]
+            max_cost = int(
+                DEFAULT_CONSTANTS.MAX_BLOCK_COST_CLVM
+                * DEFAULT_CONSTANTS.MEMPOOL_BLOCK_BUFFER
+            )
+            total_cost = sum([x[1] for x in fees_and_cost])
+
+            if total_cost * 1.05 > max_cost:
+                fees_and_cost = [
+                    x for x in fees_and_cost if x[2] > 5
+                ]  # 5 is the magic number for now
+            fees_and_cost.sort(key=lambda x: x[0])
+            min_fee = fees_and_cost[0][2]
+            for fees in fees_and_cost:
+                if fees[2] > min_fee:
+                    return fees[2] * 1.05  # increase a bit to be safe
+            return min_fee + 1
+        except Exception as e:
+            log.exception("Error getting min fee per cost")
+            return dict(error=e)
 
     async def fee_for_invoke(
         self,
@@ -296,7 +305,7 @@ class Coinman:
             w = self.get_wallet(wallet_id)
             contract = Contract(contract_filename, state, amount=int(amount))
             result = await w.calculate_fee(
-                fee_per_cost,
+                int(float(fee_per_cost)),
                 contract,
                 method,
                 args,
@@ -316,7 +325,6 @@ class Coinman:
     ):
         try:
             state = obj_from_hex(state)
-            w = self.get_wallet(wallet_id)
             contract = Contract(contract_filename, state, amount=int(amount))
             result = await contract.get_coin_query(self.node)
             return result
@@ -370,13 +378,40 @@ class Coinman:
         w = self.get_wallet(wallet_id)
         return dict(
             balance=await w.balance(),
+            is_simulator=isinstance(self.node, NodeSimulator),
             address=w.address,
             puzzle_hash=w.puzzle_hash,
             public_key=w.pk(),
+            blockchain_state=await self.node.get_blockchain_state(),
         )
+
+    async def farm_block(self, wallet_id=None):
+        if self.simulator:
+            w = self.get_wallet(wallet_id)
+            self.node.set_current_time()
+            new_block = await self.node.farm_block(w.puzzle_hash)
+            return new_block
+        return "not in simulator mode, so didn't do anything"
 
     async def destroy(self):
         await self.node.close()
+
+    async def keep_mempool_full(self):
+        """Simulates full mempool, only for simulator"""
+        w = ContractWallet(self.node, simple_seed="nobody")
+        await self.node.farm_block(w.puzzle_hash)
+        await self.node.farm_block(w.puzzle_hash)
+        while True:
+            try:
+                await w.do_no_op_spend()
+                await w.do_no_op_spend()
+            except ValueError:
+                log.exception("Error stuff")
+                await asyncio.sleep(30)
+            except:
+                log.exception("serious error")
+                await asyncio.sleep(30)
+            await asyncio.sleep(1)
 
     async def create_rpc_app(self):
         def json_serialize_unknown_value(value):
@@ -396,8 +431,6 @@ class Coinman:
 
                 elif isinstance(value, G1Element):
                     return "0x" + str(value)
-                elif isinstance(value, int):
-                    return value
                 return str(value)
             except:
                 log.exception("Error serializing: %s" % repr(value))
@@ -411,6 +444,9 @@ class Coinman:
             ],
             json_serialize=partial(json.dumps, default=json_serialize_unknown_value),
         )
+
+        async def root(request):
+            raise web.HTTPFound("/dapp/index.html")
 
         # now node methods
         rpc_server.add_method(JsonRpcMethod(self.node.push, name="node.push"))
@@ -428,13 +464,12 @@ class Coinman:
 
         if isinstance(self.node, NodeSimulator):
             rpc_server.add_method(
-                JsonRpcMethod(self.node.farm_block, name="node.farm_block")
+                JsonRpcMethod(self.farm_block, name="node.farm_block")
             )
+            asyncio.create_task(self.keep_mempool_full())
         app = web.Application()
         app.router.add_routes(
-            [
-                web.post("/rpc/", rpc_server.handle_http_request),
-            ]
+            [web.post("/rpc/", rpc_server.handle_http_request), web.get("/", root)]
         )
         app.add_routes([web.static("/dapp", "dapp")])
 
@@ -453,32 +488,3 @@ def remove_str(args) -> List:
 def get_coinman() -> Coinman:
     global COINMAN
     return COINMAN
-
-
-def _make_rpc_method(contract: Contract) -> JsonRpcMethod:
-    async def contract_func_factory(*args):
-        try:
-            log.debug("Running contract method: %s with args: %s", contract.name, args)
-            result: SExp = contract.run(args)
-            data: bytes = result.as_python()
-            log.debug("Got back data: %s", data)
-            raw_data = await transpile(data)
-            data = []
-            for chunk in raw_data:
-                if isinstance(chunk, bytes):
-                    data.append(chunk.decode("utf-8"))
-                elif isinstance(chunk, int):
-                    data.append(str(chunk))
-            data = "".join([x for x in data])
-            output: str = data.replace("'", '"')
-            log.debug("Got back output: %s", output)
-            return json.loads(output)
-        except Exception as e:
-            log.exception("Error running contract")
-            return []
-
-    method = JsonRpcMethod(
-        contract_func_factory, name=f"{contract.module}.{contract.name}"
-    )
-    method.supported_args = FullArgSpec(contract.args, None, None, None, [], None, {})
-    return method
