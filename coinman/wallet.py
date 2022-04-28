@@ -133,9 +133,7 @@ class ContractWallet:
         self.usable_coins: Dict[bytes32, Coin] = {}
         self.puzzle: Program = puzzle_for_pk(self.pk())
         self.puzzle_hash: bytes32 = self.puzzle.get_tree_hash()
-        agg_sig_me_add_data = bytes32.from_hex(
-            network.get("agg_sig_me_additional_data")
-        )
+        agg_sig_me_add_data = bytes32.fromhex(network.get("agg_sig_me_additional_data"))
         if agg_sig_me_add_data:
             self.agg_sig_me_add_data = bytes32.fromhex(agg_sig_me_add_data)
         else:
