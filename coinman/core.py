@@ -151,7 +151,7 @@ class Coinman:
             # add testnet10 agg sig me by default
             initial_config["network"][
                 "agg_sig_me_additional_data"
-            ] = b"ae83525ba8d1dd3f09b277de18ca3e43fc0af20d20c4b3e92ef2a48bd291ccb2"
+            ] = "ae83525ba8d1dd3f09b277de18ca3e43fc0af20d20c4b3e92ef2a48bd291ccb2"
         path = Path(path_str) / Path("coinman.yaml")
         if os.path.exists(path):
             print("Project already initialized. Check coinman.yaml.")
