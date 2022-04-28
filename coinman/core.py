@@ -253,7 +253,7 @@ class Coinman:
                 "error invoking contract method with: %s"
                 % str((contract_filename, state, method, args, amount))
             )
-            return dict(error=e)
+            return dict(error=type(e).__name__)
 
     async def get_min_fee_per_cost(self):
         try:
