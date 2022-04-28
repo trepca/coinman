@@ -6,14 +6,14 @@ Coinman introduces a concept of _contracts_ in Chialisp that expose methods and 
 
 # Quickstart with an example
 
+Runs in a simulator so has no other requirements but this. No full node required etc.
+
 ```sh
 git clone git@github.com:trepca/coinman.git
 poetry install
 poetry shell
 
 ```
-
-`
 
 Clone Chirp, a messaging protocol, that includes UX too.
 
@@ -33,6 +33,8 @@ coinman --simulator runserver
 ```
 
 ## Chirp
+
+This is how it looks, it support broadcasting to everyone and group channels. Try [Chirp](https://github.com/trepca/chirp/) out.
 
 ![Image](/chirp.png "Chirp - messaging dApp")
 
