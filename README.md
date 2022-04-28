@@ -47,4 +47,4 @@ This is how it looks, it support broadcasting to everyone and group channels. Tr
 
 # Concept
 
-Plan is to have many contracts that developers can use to combine and create powerful dApps on Chia.
+Plan is to have many contracts that developers can use to combine and create powerful dApps on Chia without knowing Chialisp.
