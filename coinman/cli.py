@@ -125,10 +125,10 @@ async def show_wallet(ctx, wallet):
         )
 
 
-@click.command(help="Get current minimum fee")
+@click.command(help="Get mempool fee related infomation")
 @coro
 @click.pass_context
-async def get_min_fee(
+async def get_fee_info(
     ctx,
 ):
     from coinman.core import Coinman
@@ -136,10 +136,18 @@ async def get_min_fee(
     coinman: Coinman
 
     async with ctx.obj as coinman:
-        result = await coinman.get_min_fee_per_cost()
+        result = await coinman.node.get_blockchain_state()
         import pprint
 
-        pprint.pprint(result)
+        stats = dict(
+            mempool_size=result["mempool_size"],
+            mempool_cost=result["mempool_cost"],
+            mempool_min_fees=dict(
+                cost_5000000=result["mempool_min_fees"]["cost_5000000"]
+            ),
+            mempool_max_total_cost=result["mempool_max_total_cost"],
+        )
+        pprint.pprint(stats)
 
 
 @click.command(help="Invoke a contract coin method.")
@@ -322,7 +330,7 @@ Type `chia()` to see available commands.
 
 
 cli.add_command(runserver)
-cli.add_command(get_min_fee)
+cli.add_command(get_fee_info)
 cli.add_command(show_wallet)
 cli.add_command(init)
 cli.add_command(inspect)
