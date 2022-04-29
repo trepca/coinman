@@ -65,10 +65,9 @@ def cli(ctx, config_path, verbose, simulator):
     if verbose:
         global VERBOSE
         VERBOSE = True
-    debug(f"Setting up...")
     from coinman.core import Coinman
 
-    if not Path(config_path).exists():
+    if ctx.invoked_subcommand != "init" and not Path(config_path).exists():
         click.echo(click.style("Config file not found: %s" % config_path, fg="red"))
         sys.exit(1)
     coinman = Coinman.create(config_path, simulate=simulator)
@@ -93,8 +92,8 @@ async def init(ctx, path, testnet):
         async with ctx.obj as coinman:
             w = coinman.get_wallet()
             print(
-                "Please send some XCH (0.01 should be enough) to the wallet so you can make transactions: \n\t%s"
-                % w.address
+                "Please send some %s (0.01 should be enough) to the wallet so you can make transactions.\nYour address: %s"
+                % (coinman.currency, w.address)
             )
 
 
@@ -118,10 +117,18 @@ async def show_wallet(ctx, wallet):
         click.echo(str(w.pk()))
         click.echo("Address: ", nl=False)
         click.echo(w.address)
+        mojos = await w.balance()
         click.echo(
-            click.style("Balance: ", bold=True)
-            + click.style(str(await w.balance()), fg="red", bold=True)
-            + " mojos"
+            "Balance: "
+            + click.style(
+                "%s %s "
+                % (
+                    mojos / 1000000000000,
+                    coinman.currency,
+                ),
+                bold=True,
+            )
+            + click.style("(%s mojos)" % str(mojos))
         )
 
 
@@ -277,11 +284,21 @@ async def runserver(ctx):
 
     coinman: Coinman
     async with ctx.obj as coinman:
-        app = coinman.create_rpc_app()
         if coinman.simulator:
             w = coinman.get_wallet()
             await coinman.node.farm_block(w.puzzle_hash)
             await coinman.node.farm_block(w.puzzle_hash)
+        else:
+            w = coinman.get_wallet()
+            bal = await w.balance() / 1000000000000
+            if bal < 0.01:
+                click.echo(
+                    "Sorry, you need at least 0.01 %s (you currently have %s %s)"
+                    % (coinman.currency, bal, coinman.currency)
+                )
+                click.echo("Send it to: %s" % w.address)
+                return
+        app = coinman.create_rpc_app()
         host = "127.0.0.1"
         try:
             host = coinman.config["server"]["host"]

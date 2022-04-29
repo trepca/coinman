@@ -129,6 +129,7 @@ class Coinman:
     node: Node
     wallets: Dict
     config: Dict
+    currency: str
 
     def __init__(self, node, wallets, contracts, config, simulator=False):
         self.wallets = wallets
@@ -136,6 +137,12 @@ class Coinman:
         self.contracts = contracts
         self.config = config
         self.simulator = simulator
+        network = config.get("network", {})
+        testnet = network.get("testnet")
+        if testnet:
+            self.currency = "TXCH"
+        else:
+            self.currency = "XCH"
 
     @staticmethod
     def init(path_str: str, testnet=False):
@@ -190,7 +197,6 @@ class Coinman:
             contract_module = load_contracts(path)
             for contract_method in contract_module:
                 contracts[contract_method.full_path].append(contract_method)
-
         instance = Coinman(node, wallets, contracts, config, simulate)
         global COINMAN
         COINMAN = instance
