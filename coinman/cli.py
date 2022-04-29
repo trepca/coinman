@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 import asyncio
-from typing import Any, Dict
-from coinman.contract import Contract
-
-from aiohttp import web
-from functools import wraps
 import json
-from chia.util.byte_types import hexstr_to_bytes
-import click
-import aiohttp_rpc
-import logging
+from functools import wraps
+from pathlib import Path
+import sys
+from typing import Dict
 
+import click
+from aiohttp import web
+from chia.util.byte_types import hexstr_to_bytes
 
 VERBOSE = False
 
@@ -61,15 +59,18 @@ def parse_launcher(ctx, param, value):
 )
 @click.pass_context
 def cli(ctx, config_path, verbose, simulator):
-    """Manage beacon coins on Chia network.
+    """Manage contract puzzles and their coins.
 
-    They can be used to store key information in a decentralized and durable way."""
+    Build powerful apps on Chia with contract puzzle coins to easily that expose easy to use APIs"""
     if verbose:
         global VERBOSE
         VERBOSE = True
     debug(f"Setting up...")
     from coinman.core import Coinman
 
+    if not Path(config_path).exists():
+        click.echo(click.style("Config file not found: %s" % config_path, fg="red"))
+        sys.exit(1)
     coinman = Coinman.create(config_path, simulate=simulator)
     ctx.obj = coinman
 
@@ -112,7 +113,6 @@ async def show_wallet(ctx, wallet):
     coinman: Coinman
     async with ctx.obj as coinman:
         w = coinman.get_wallet(wallet)
-        import pprint
 
         click.echo("Public key: ", nl=False)
         click.echo(str(w.pk()))
@@ -289,10 +289,8 @@ async def runserver(ctx):
 @click.argument("filename", type=click.Path(exists=True), required=False)
 def shell(filename=""):
     import IPython
-    from pkg_resources import parse_version  # installed with setuptools
-
-    from traitlets.config import Config
     from IPython.terminal.prompts import Prompts, Token
+    from traitlets.config import Config
 
     class MyPrompt(Prompts):
         def in_prompt_tokens(self, cli=None):

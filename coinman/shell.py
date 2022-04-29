@@ -11,14 +11,17 @@ from coinman.util import syncify
 def load_ipython_extension(ip):
 
     import asyncio
-    from coinman.wallet import Wallet
+
+    from coinman.wallet import ContractWallet
 
     loop = asyncio.get_event_loop()
     run = loop.run_until_complete
     node = run(NodeSimulator.create())
 
-    def farm_block(wallet: Wallet = None):
-        additions, removals = run(node.farm_block(wallet))
+    def farm_block(wallet: ContractWallet = None):
+        additions, removals = run(
+            node.farm_block(wallet.puzzle_hash if wallet else None)
+        )
         print("=> Farmed a new block: %s" % node.sim.block_height)
         if wallet:
             print("=> Rewarded `%s` with block reward coins." % wallet)
@@ -40,10 +43,12 @@ def load_ipython_extension(ip):
             print("=> No coins removed.")
 
     def new_wallet(seed):
-        wallet = Wallet(node, simple_seed=seed)
+        wallet = ContractWallet(node, simple_seed=seed)
         wallet.mint = syncify(wallet.mint)
-        wallet.spend = syncify(wallet.spend)
+        wallet.run = syncify(wallet.run)
         wallet.balance = syncify(wallet.balance)
+        wallet.calculate_fee = syncify(wallet.calculate_fee)
+        wallet.select_coins = syncify(wallet.select_coins)
         return wallet
 
     def push(*spends: List[SpendBundle]):
@@ -54,7 +59,7 @@ def load_ipython_extension(ip):
         @staticmethod
         def rpc(method, *args):
             async def _run():
-                async with aiohttp_rpc.JsonRpcClient("http://0.0.0.0:9000/rpc/v1") as c:
+                async with aiohttp_rpc.JsonRpcClient("http://0.0.0.0:9000/rpc/") as c:
                     return await c.call(method, *args)
 
             return asyncio.run(_run())
@@ -62,7 +67,7 @@ def load_ipython_extension(ip):
         @staticmethod
         def methods():
             async def _run():
-                async with aiohttp_rpc.JsonRpcClient("http://0.0.0.0:9000/rpc/v1") as c:
+                async with aiohttp_rpc.JsonRpcClient("http://0.0.0.0:9000/rpc/") as c:
                     return await c.get_methods()
 
             return asyncio.run(_run())
@@ -70,7 +75,7 @@ def load_ipython_extension(ip):
     def chia_help():
         print(
             """
-- client -> use this to run driver methods on the server
+- client -> use this to run driver methods on the RPC server (you'll need to run `coinman runserver`)
 - new_wallet(wallet_id) -> creates a new wallet with wallet_id as seed
 - push(spend_bundle) -> pushes bundle to mempool
 - farm_block([wallet_id]) -> farms a new block if running in simulator mode

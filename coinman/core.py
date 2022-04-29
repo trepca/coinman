@@ -57,6 +57,7 @@ def get_size(obj, seen=None):
     return size
 
 
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
 logging.config.dictConfig(
     {
         "version": 1,
@@ -85,17 +86,17 @@ logging.config.dictConfig(
             },
             "aiohttp_rpc": {
                 "handlers": ["console"],
-                "level": os.environ.get("LOG_LEVEL", "DEBUG"),
+                "level": LOG_LEVEL,
                 "propagate": False,
             },
             "aiohttp": {
                 "handlers": ["console"],
-                "level": os.environ.get("LOG_LEVEL", "DEBUG"),
+                "level": LOG_LEVEL,
                 "propagate": False,
             },
             "coinman": {
                 "handlers": ["console"],
-                "level": os.environ.get("LOG_LEVEL", "DEBUG"),
+                "level": LOG_LEVEL,
                 "propagate": False,
             },
         },
