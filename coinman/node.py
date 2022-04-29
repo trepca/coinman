@@ -82,6 +82,7 @@ class Node:
         return []
 
     async def get_coin_records_by_hint(self, hint: bytes32, **kwargs) -> List[Coin]:
+        log.debug("Fetching coins by hint: %s %s", hint, kwargs)
         coins = await self.client.get_coin_records_by_hint(hint, **kwargs)
         if coins:
             return coins
@@ -144,6 +145,10 @@ class Node:
     async def get_all_mempool_items(self) -> Dict[bytes32, Dict]:
         spends = await self.client.get_all_mempool_items()
         return spends
+
+    async def get_mempool_item_by_tx_id(self, tx_id: bytes32) -> Optional[Dict]:
+        spend = await self.client.get_mempool_item_by_tx_id(tx_id)
+        return spend
 
     async def get_puzzle_and_solution(
         self, coin_id: bytes32, height: uint32

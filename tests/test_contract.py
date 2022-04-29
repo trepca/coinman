@@ -28,7 +28,7 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
         # running it again raise ContractWalletError(code=1, msg="all unspent coins have been run")
 
         await node.farm_block()
-        result = await alice.run(contract1, b"get_messages", 0, 100)
+        result = await alice.run(contract1, b"get_messages", 0, node.sim.block_height)
         assert result["status"] == "ok"
         assert result["type"] == "query"
         assert len(result["records"]) == 1
@@ -44,7 +44,7 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
 
         await node.farm_block()
 
-        result = await alice.run(contract1, b"get_messages", 0, 100)
+        result = await alice.run(contract1, b"get_messages", 0, node.sim.block_height)
         assert result["status"] == "ok"
         assert result["type"] == "query"
         assert len(result["records"]) == 2
@@ -62,10 +62,10 @@ async def test_public_msg_coin_contract(node: NodeSimulator):
         await node.farm_block()
         await bob.run(contract2, b"send_message", b"hi everyone!")
         await node.farm_block()
-        result = await bob.run(contract2, b"get_messages", 0, 10)
+        result = await bob.run(contract2, b"get_messages", 0, node.sim.block_height)
         assert len(result["records"]) == 3
         assert result["records"][2]["data"] == [b"hi everyone!"]
-        result = await alice.run(contract1, b"get_messages", 0, 10)
+        result = await alice.run(contract1, b"get_messages", 0, node.sim.block_height)
         assert len(result["records"]) == 3
         assert result["records"][2]["state"]["pk"] == bytes(bob.pk())
         assert result["records"][2]["data"] == [b"hi everyone!"]
@@ -101,7 +101,9 @@ async def test_custom_channel_msg_coin_contract(node: NodeSimulator):
         )  # find the contract coin and spends it, pushes to node too
 
         await node.farm_block()
-        result = await alice.run(alices_contract, b"get_messages", 0, 100)
+        result = await alice.run(
+            alices_contract, b"get_messages", 0, node.sim.block_height
+        )
         assert result["status"] == "ok"
         assert result["type"] == "query"
         assert len(result["records"]) == 1
@@ -116,7 +118,7 @@ async def test_custom_channel_msg_coin_contract(node: NodeSimulator):
         assert result["type"] == "spend"
 
         await node.farm_block()
-        result = await bob.run(bobs_contract, b"get_messages", 0, 100)
+        result = await bob.run(bobs_contract, b"get_messages", 0, node.sim.block_height)
         assert result["status"] == "ok"
         assert result["type"] == "query"
         assert len(result["records"]) == 2
@@ -127,7 +129,7 @@ async def test_custom_channel_msg_coin_contract(node: NodeSimulator):
         await bob.run(bobs_contract, b"send_message", b"this is so cool!")
 
         await node.farm_block()
-        result = await bob.run(bobs_contract, b"get_messages", 0, 100)
+        result = await bob.run(bobs_contract, b"get_messages", 0, node.sim.block_height)
         assert result["status"] == "ok"
         assert result["type"] == "query"
         assert len(result["records"]) == 3

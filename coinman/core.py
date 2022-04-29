@@ -3,6 +3,8 @@ from collections import defaultdict
 from functools import partial
 import os
 from pathlib import Path
+
+from chia.types.spend_bundle import SpendBundle
 import aiohttp_rpc
 from chia.consensus.default_constants import DEFAULT_CONSTANTS
 from chia.types.coin_record import CoinRecord
@@ -70,7 +72,10 @@ logging.config.dictConfig(
         },
         "disable_existing_loggers": True,
         "handlers": {
-            "console": {"class": "logging.StreamHandler", "formatter": "verbose"},
+            "console": {
+                "class": "logging.StreamHandler",
+                "formatter": "verbose",
+            },
         },
         "loggers": {
             "chia": {  # root logger
@@ -253,37 +258,7 @@ class Coinman:
                 "error invoking contract method with: %s"
                 % str((contract_filename, state, method, args, amount))
             )
-            return dict(error=type(e).__name__)
-
-    async def get_min_fee_per_cost(self):
-        try:
-            mempool_items = await self.node.get_all_mempool_items()
-
-            if not mempool_items:
-                return 0.0
-            fees_and_cost = [
-                (x["fee"], x["cost"], x["fee"] / x["cost"] if x["fee"] else 0)
-                for x in mempool_items.values()
-            ]
-            max_cost = int(
-                DEFAULT_CONSTANTS.MAX_BLOCK_COST_CLVM
-                * DEFAULT_CONSTANTS.MEMPOOL_BLOCK_BUFFER
-            )
-            total_cost = sum([x[1] for x in fees_and_cost])
-
-            if total_cost * 1.05 > max_cost:
-                fees_and_cost = [
-                    x for x in fees_and_cost if x[2] > 5
-                ]  # 5 is the magic number for now
-            fees_and_cost.sort(key=lambda x: x[0])
-            min_fee = fees_and_cost[0][2]
-            for fees in fees_and_cost:
-                if fees[2] > min_fee:
-                    return fees[2] * 1.05  # increase a bit to be safe
-            return min_fee + 1
-        except Exception as e:
-            log.exception("Error getting min fee per cost")
-            return dict(error=e)
+            return dict(error=type(e).__name__, msg=str(e))
 
     async def fee_for_invoke(
         self,
@@ -349,7 +324,7 @@ class Coinman:
                 "error minting contract coin with: %s"
                 % str((contract_filename, state, amount))
             )
-            return dict(error=str(e))
+            return dict(error=type(e).__name__)
 
     async def inspect(self, contract_filename: str, state: Dict, amount=1) -> Dict:
         try:
@@ -413,6 +388,20 @@ class Coinman:
                 await asyncio.sleep(30)
             await asyncio.sleep(3)
 
+    async def get_status(self, spend_bundle_dict: Dict):
+        sb = SpendBundle.from_json_dict(spend_bundle_dict)
+        name = sb.name()
+        added_coin_names = [x.name() for x in sb.additions()]
+        were_added = await self.node.get_coin_records_by_names(added_coin_names)
+        if were_added:
+            log.debug("Coins returned that were added: %s", were_added)
+            return "Confirmed"
+        spends = await self.node.get_mempool_item_by_tx_id(name)
+        if spends:
+            log.debug("Found spend in mempool: %s", spends)
+            return "In Mempool"
+        return "Not found"
+
     async def create_rpc_app(self):
         def json_serialize_unknown_value(value):
             log.debug("Serializing: %s" % repr(value))
@@ -454,9 +443,7 @@ class Coinman:
         rpc_server.add_method(JsonRpcMethod(self.mint, name="contract.mint"))
         rpc_server.add_method(JsonRpcMethod(self.inspect, name="contract.inspect"))
         rpc_server.add_method(JsonRpcMethod(self.get_wallet_info, name="wallet.poke"))
-        rpc_server.add_method(
-            JsonRpcMethod(self.get_min_fee_per_cost, name="node.get_min_fee_per_cost")
-        )
+        rpc_server.add_method(JsonRpcMethod(self.get_status, name="node.get_tx_status"))
         rpc_server.add_method(
             JsonRpcMethod(self.fee_for_invoke, name="contract.get_fee_for_invoke")
         )

@@ -1,5 +1,6 @@
 import datetime
 import logging
+import os
 from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 from xml.dom import Node
@@ -54,17 +55,6 @@ log = logging.getLogger(__name__)
 mempool = {}
 
 
-"""
-The purpose of this file is to provide a lightweight simulator for the testing of Chialisp smart contracts.
-
-The Node object uses actual MempoolManager, Mempool and CoinStore objects, while substituting FullBlock and
-BlockRecord objects for trimmed down versions.
-
-There is also a provided NodeClient object which implements many of the methods from chia.rpc.full_node_rpc_client
-and is designed so that you could test with it and then swap in a real rpc client that uses the same code you tested.
-"""
-
-
 class SimFullBlock:
     def __init__(self, generator: Optional[BlockGenerator], height: uint32):
         self.height = height  # Note that height is not on a regular FullBlock
@@ -97,18 +87,19 @@ class SpendSim:
     defaults: ConsensusConstants
     db_wrapper: DBWrapper2
     hint_store: HintStore
+    uri: str
 
     @classmethod
     async def create(cls, defaults=DEFAULT_CONSTANTS):
         self = cls()
-        uri = f"file:db_{random.randint(0, 99999999)}?mode=memory&cache=shared"
-        db_connection = await aiosqlite.connect(uri)
+        self.uri = f"file:db_{random.randint(0, 99999999)}?mode=memory&cache=shared"
+        db_connection = await aiosqlite.connect(self.uri)
         self.db_wrapper = DBWrapper2(db_connection, db_version=2)
-        await self.db_wrapper.add_connection(await aiosqlite.connect(uri))
+        await self.db_wrapper.add_connection(await aiosqlite.connect(self.uri))
         coin_store = await CoinStore.create(self.db_wrapper)
         self.hint_store = await HintStore.create(self.db_wrapper)
         defaults = defaults.replace(
-            MEMPOOL_BLOCK_BUFFER=1, MAX_BLOCK_COST_CLVM=90000000
+            MEMPOOL_BLOCK_BUFFER=1, MAX_BLOCK_COST_CLVM=170846922
         )
         self.mempool_manager = MempoolManager(
             coin_store, defaults, single_threaded=True
@@ -116,12 +107,13 @@ class SpendSim:
         self.block_records = []
         self.blocks = []
         self.timestamp = int(time.time())
-        self.block_height = 1  # skip prefarm
+        self.block_height = 800000  # skip prefarm
         self.defaults = defaults
         return self
 
     async def close(self):
         await self.db_wrapper.close()
+        os.remove(self.uri)
 
     async def new_peak(self):
         await self.mempool_manager.new_peak(self.block_records[-1], [])
@@ -305,11 +297,11 @@ class SimClient:
                     spend_bundle, None, spend_bundle.name()
                 )
             )
+            cost, status, error = await self.service.mempool_manager.add_spendbundle(
+                spend_bundle, cost_result, spend_bundle.name()
+            )
         except ValidationError as e:
             status, error = MempoolInclusionStatus.FAILED, e.code
-        cost, status, error = await self.service.mempool_manager.add_spendbundle(
-            spend_bundle, cost_result, spend_bundle.name()
-        )
 
         if error:
             assert error is not None
@@ -589,10 +581,21 @@ class NodeSimulator(Node):
 
     # 'peak' is valid
     async def get_blockchain_state(self) -> Dict:
+        mempool_size = len(self.sim.mempool_manager.mempool.spends)
+        mempool_cost = self.sim.mempool_manager.mempool.total_mempool_cost
+        mempool_min_fee_5m = self.sim.mempool_manager.mempool.get_min_fee_rate(6000000)
+        mempool_max_total_cost = self.sim.mempool_manager.mempool_max_total_cost
         state = {
             "blockchain_state": {
-                "mempool_size": 0,
+                "mempool_size": mempool_size,
+                "mempool_cost": mempool_cost,
+                "mempool_min_fees": {
+                    # We may give estimates for varying costs in the future
+                    # This Dict sets us up for that in the future
+                    "cost_5000000": mempool_min_fee_5m,
+                },
+                "mempool_max_total_cost": mempool_max_total_cost,
                 "peak": {"height": self.sim.get_height()},
             }
         }
-        return state
+        return state["blockchain_state"]

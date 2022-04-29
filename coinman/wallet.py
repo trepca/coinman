@@ -258,7 +258,7 @@ class ContractWallet:
             final_bundle = SpendBundle.aggregate(bundles)
             return final_bundle
 
-        solution = [method, [bytes(x) for x in args]]
+        solution = [method, [x for x in args]]
         log.debug(
             "Running program %s with solution: %s"
             % (disassemble(contract.program), solution)
@@ -336,8 +336,8 @@ class ContractWallet:
                         self.node.get_coin_records_by_hint(
                             hint,
                             include_spent_coins=spent,
-                            # start_height=start,
-                            # end_height=end,
+                            start_height=start,
+                            end_height=end,
                         )
                     )
 
@@ -409,11 +409,8 @@ class ContractWallet:
 
         return records
 
-    async def get_status(self, spend_bundle_name) -> int:
-        pass
-
     async def do_no_op_spend(self) -> SpendBundle:
-        coins_to_spend = [x for x in await self.select_coins(int(1000000000000 * 2))]
+        coins_to_spend = [x for x in await self.select_coins(int(10000 * 2))]
         bundles = []
         for coin_to_spend in coins_to_spend:
             conditions = [
@@ -421,7 +418,7 @@ class ContractWallet:
                     [
                         ConditionOpcode.CREATE_COIN,
                         self.puzzle_hash,
-                        coin_to_spend.amount,
+                        coin_to_spend.amount - 10000,
                     ]
                 )
             ]
@@ -505,7 +502,7 @@ class ContractWallet:
         log.debug("MINT push result: %s", result)
         return final_spend_bundle.additions()[0]
 
-    async def calculate_fee(self, fee_per_cost, contract, method, args) -> int:
+    async def calculate_fee(self, fee_per_cost, contract, method, args) -> Dict:
         solution = [method, [bytes(x) for x in args]]
         fake_coin = Coin(bytes32(b"a" * 32), bytes32(b"b" * 32), 1)
         spend_bundle = await self.make_spend_bundle(fake_coin, contract, solution)
@@ -516,8 +513,10 @@ class ContractWallet:
             cost_per_byte=DEFAULT_CONSTANTS.COST_PER_BYTE,
             mempool_mode=True,
         )
-        fee = npc.cost * fee_per_cost
-        return fee
+        fee = int(
+            npc.cost * fee_per_cost * 1.2
+        )  # increase for 20% for any additional fee spends
+        return dict(fee=fee, cost=npc.cost)
 
     async def make_spend_bundle(
         self,
