@@ -211,12 +211,14 @@ async def invoke(
 @click.option(
     "-a",
     "--amount",
+    required=True,
     help="Coin amount contract should use",
 )
 @click.option(
     "-s",
     "--state",
     help="Chialisp program to store as initial state. It should be a key/pair form: ",
+    required=True,
 )
 @click.argument("filename")
 @coro
@@ -225,10 +227,10 @@ async def inspect(ctx, amount, state, filename):
     """Inspect a contract"""
     state = json.loads(state)
     async with ctx.obj as coinman:
-        meta = coinman.inspect(filename, state, amount)
-        print("Inspecting %s" % meta["full_path"])
+        meta = await coinman.inspect(filename, state, amount)
+        print("Inspecting %s" % meta["name"])
         print("Methods: %s" % meta["methods"])
-        print("Properties: %s" % meta["props"])
+        print("Properties: %s" % meta["properties"])
         print("Hints: %s" % meta["hints"])
 
 
