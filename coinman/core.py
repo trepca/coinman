@@ -364,6 +364,7 @@ class Coinman:
             address=w.address,
             puzzle_hash=w.puzzle_hash,
             public_key=w.pk(),
+            private_key=(await w.get_private_key())["sk"],
             state=await self.node.get_blockchain_state(),
         )
 

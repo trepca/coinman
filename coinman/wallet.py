@@ -157,7 +157,7 @@ class ContractWallet:
         (synthetic_fingerlog.debug,) = struct.unpack("<I", bytes(self.pk_)[:4])
         return [synthetic_fingerlog.debug]
 
-    async def get_private_key(self, fp):
+    async def get_private_key(self):
         return {"sk": binascii.hexlify(bytes(self.generator_sk_))}
 
     def pk_to_sk(self, pk: G1Element) -> PrivateKey:
@@ -441,6 +441,65 @@ class ContractWallet:
             bundles.append(spend_bundle)
         final_spend_bundle = SpendBundle.aggregate(bundles)
         return await self._push(final_spend_bundle)
+
+    async def mint_chialisp(
+        self, chialisp: Union[str, bytes, Program, List], amount: int = 1, fee: int = 0
+    ) -> Coin:
+        async def make_bundle(coin_to_spend, conditions) -> SpendBundle:
+            delegated_puzzle_solution: Program = Program(Program.to((1, conditions)))
+            solution = Program.to([[], delegated_puzzle_solution, []])
+            try:
+                spend_bundle: SpendBundle = await sign_coin_spends(
+                    [CoinSpend(coin_to_spend, self.puzzle, solution)],
+                    self.pk_to_sk,
+                    self.agg_sig_me_add_data,
+                    DEFAULT_CONSTANTS.MAX_BLOCK_COST_CLVM,
+                )
+            except ValueError:
+                spend_bundle = SpendBundle(
+                    [coin_to_spend],
+                    G2Element(),
+                )
+            return spend_bundle
+
+        amt = uint64(amount)
+        program = program_for(chialisp)
+        coins_to_spend = [x for x in await self.select_coins(amt + fee)]
+        log.debug(
+            "Minting chialisp=%s with amount=%s and fee=%s", chialisp, amount, fee
+        )
+        if not coins_to_spend:
+            raise ValueError(f"could not find available coin containing {amt} mojo")
+        amount_to_spend = uint64(sum(map(lambda x: x.amount, coins_to_spend)))
+
+        # pick the first one to mint contract coin
+        minter = coins_to_spend[0]
+        condition_args: List[List] = [
+            [
+                ConditionOpcode.CREATE_COIN,
+                program.get_tree_hash(),
+                amt,
+            ]
+        ]
+
+        if amt < (amount_to_spend - fee):
+            condition_args.append(
+                [
+                    ConditionOpcode.CREATE_COIN,
+                    self.puzzle_hash,
+                    amount_to_spend - amt - fee,
+                ]
+            )
+        spend_bundle: SpendBundle = await make_bundle(minter, condition_args)
+        bundles = [spend_bundle]
+        for coin in coins_to_spend[1:]:
+            bundles.append(await make_bundle(coin, []))
+        final_spend_bundle = SpendBundle.aggregate(bundles)
+        log.debug("Generated final spend_bundle: %s", final_spend_bundle)
+        log.debug(
+            "Additions from final spend bundle: %s", final_spend_bundle.additions()
+        )
+        return final_spend_bundle.additions()[0]
 
     async def mint(self, contract, amount=1, fee=0) -> Coin:
         async def make_bundle(coin_to_spend, conditions) -> SpendBundle:

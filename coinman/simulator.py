@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import logging
 import os
@@ -540,6 +541,10 @@ class NodeSimulator(Node):
     def set_current_time(self):
         timestamp = self.sim.timestamp
         self.sim.pass_time(uint64(int(time.time()) - timestamp))
+
+    def __del__(self):
+        loop = asyncio.get_event_loop()
+        loop.run_until_complete(self.sim.close())
 
     async def close(self):
         await self.sim.close()
